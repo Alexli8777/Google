@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel 檔案比對與填充工具</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 600px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            line-height: 1.6;
+        }
+        input[type="file"] {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #output { color: green; margin-top: 20px; }
+        #error { color: red; margin-top: 20px; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+    <h1>Excel 檔案比對與填充工具</h1>
+    <p>上傳來源檔（Excel，包含店 code 在 A 欄，負評在 H 欄、中立在 I 欄、好評在 J 欄）和目標檔（Excel，包含 IVR Code 在 A 欄），系統會比對 7 位數代碼，將來源檔的負評、中立、好評填充到目標檔的對應位置（E、F、G 欄），然後下載輸出檔。</p>
+    
+    <label for="sourceFile">上傳來源檔（.xlsx）：</label><br>
+    <input type="file" id="sourceFile" accept=".xlsx"><br>
+    
+    <label for="targetFile">上傳目標檔（.xlsx）：</label><br>
+    <input type="file" id="targetFile" accept=".xlsx"><br>
+    
+    <button id="processBtn" onclick="processFiles()">處理並下載輸出</button>
+    
+    <div id="output"></div>
+    <div id="error"></div>
+
+    <script>
+        function processFiles() {
+            const sourceFile = document.getElementById('sourceFile').files[0];
+            const targetFile = document.getElementById('targetFile').files[0];
+            const outputDiv = document.getElementById('output');
+            const errorDiv = document.getElementById('error');
+            const button = document.getElementById('processBtn');
+            
+            outputDiv.innerHTML = '';
+            errorDiv.innerHTML = '';
+            
+            if (!sourceFile || !targetFile) {
+                errorDiv.innerHTML = '請上傳兩個 Excel 檔案。';
+                return;
+            }
+            
+            button.disabled = true;
+            button.textContent = '處理中...';
+            
+            const readFile = (file) => {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve(e.target.result);
+                    reader.onerror = reject;
+                    reader.readAsArrayBuffer(file);
+                });
+            };
+            
+            Promise.all([readFile(sourceFile), readFile(targetFile)])
+                .then(([sourceData, targetData]) => {
+                    const sourceWB = XLSX.read(sourceData, { type: 'array' });
+                    const targetWB = XLSX.read(targetData, { type: 'array' });
+                    
+                    const sourceSheetName = sourceWB.SheetNames[0];
+                    const targetSheetName = targetWB.SheetNames[0];
+                    
+                    const sourceWS = sourceWB.Sheets[sourceSheetName];
+                    const targetWS = targetWB.Sheets[targetSheetName];
+                    
+                    const sourceArray = XLSX.utils.sheet_to_json(sourceWS, { header: 1 });
+                    const targetArray = XLSX.utils.sheet_to_json(targetWS, { header: 1 });
+                    
+                    // 從來源檔建立 code 對應的評價 map (跳過標頭，從第二行開始)
+                    const codeMap = new Map();
+                    for (let i = 1; i < sourceArray.length; i++) {
+                        const row = sourceArray[i];
+                        const code = row[0] ? row[0].toString().trim() : '';
+                        if (code.match(/^\d{7}$/)) {
+                            const neg = row[7] || ''; // H 欄 (index 7)
+                            const neu = row[8] || ''; // I 欄 (index 8)
+                            const pos = row[9] || ''; // J 欄 (index 9)
+                            codeMap.set(code, { neg, neu, pos });
+                        }
+                    }
+                    
+                    if (codeMap.size === 0) {
+                        throw new Error('來源檔中未找到有效的 7 位數店 code。');
+                    }
+                    
+                    // 更新目標檔陣列 (跳過標頭，從第二行開始)
+                    for (let i = 1; i < targetArray.length; i++) {
+                        const row = targetArray[i];
+                        const ivrCode = row[0] ? row[0].toString().trim() : '';
+                        if (ivrCode.match(/^\d{7}$/) && codeMap.has(ivrCode)) {
+                            const { neg, neu, pos } = codeMap.get(ivrCode);
+                            row[4] = neg; // E 欄 (index 4) - 負評
+                            row[5] = neu; // F 欄 (index 5) - 中立
+                            row[6] = pos; // G 欄 (index 6) - 好評
+                        }
+                    }
+                    
+                    // 建立新工作簿
+                    const newWB = XLSX.utils.book_new();
+                    const newWS = XLSX.utils.aoa_to_sheet(targetArray);
+                    XLSX.utils.book_append_sheet(newWB, newWS, targetSheetName);
+                    
+                    // 下載
+                    XLSX.writeFile(newWB, 'output.xlsx');
+                    outputDiv.innerHTML = '處理完成，已下載輸出檔。';
+                })
+                .catch((err) => {
+                    errorDiv.innerHTML = '發生錯誤：' + err.message;
+                })
+                .finally(() => {
+                    button.disabled = false;
+                    button.textContent = '處理並下載輸出';
+                });
+        }
+    </script>
+</body>
+</html>
